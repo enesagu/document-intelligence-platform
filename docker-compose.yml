@@ -1,0 +1,101 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: dip
+      POSTGRES_PASSWORD: dip
+      POSTGRES_DB: dip
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb -p local/raw || true;
+      mc mb -p local/processed || true;
+      mc anonymous set download local/processed || true;
+      echo 'MinIO buckets ready';
+      "
+
+  api:
+    build: ./services/api
+    environment:
+      DATABASE_URL: postgresql+psycopg://dip:dip@postgres:5432/dip
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      RAW_BUCKET: raw
+      PROCESSED_BUCKET: processed
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - minio
+
+  extractor:
+    build: ./services/extractor
+    environment:
+      DATABASE_URL: postgresql+psycopg://dip:dip@postgres:5432/dip
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      RAW_BUCKET: raw
+      PROCESSED_BUCKET: processed
+    depends_on:
+      - postgres
+      - minio
+
+  airflow:
+    build: ./airflow
+    depends_on:
+      - postgres
+      - minio
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://dip:dip@postgres:5432/dip
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      # MinIO creds for DAG
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      RAW_BUCKET: raw
+      PROCESSED_BUCKET: processed
+      PYTHONPATH: /opt/airflow
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow/requirements.txt:/requirements.txt
+    ports:
+      - "8080:8080"
+    command: >
+      bash -c "
+      airflow db migrate &&
+      airflow users create --username admin --password admin --firstname Admin --lastname Admin --role Admin --email admin@example.com || true &&
+      airflow webserver & airflow scheduler
+      "
+
+volumes:
+  pgdata:
+  miniodata:
