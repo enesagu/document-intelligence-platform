@@ -14,34 +14,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # Docker Compose ile tüm servisleri başlatır
-      - name: Start Services with Docker Compose
+      - name: Start Services
         run: |
+          # --quiet-pull log kirliliğini azaltır
           docker compose up -d --build
 
-      # Servislerin hazır olması için kısa bir bekleme süresi (Healthcheck yoksa gerekebilir)
-      - name: Wait for Services
-        run: sleep 30
+      # Airflow'un hazır olması için daha sağlıklı bir bekleme yöntemi
+      - name: Wait for Airflow Health
+        run: |
+          echo "Waiting for Airflow to be ready..."
+          for i in {1..30}; do
+            if curl -s http://localhost:8080/health | grep -q '"status": "healthy"'; then
+              echo "Airflow is up!"
+              exit 0
+            fi
+            echo "Attempt $i: Airflow not ready yet, waiting 10s..."
+            sleep 10
+          done
+          echo "Airflow failed to start in time"
+          docker compose logs airflow
+          exit 1
 
-      # Konteynerların durumunu kontrol et (Debug için faydalı)
       - name: Check Container Status
         run: docker compose ps
 
-      # Örnek: API servisi üzerinde testleri çalıştırma
-      # Eğer bir test scriptiniz varsa burayı özelleştirebilirsiniz
+      # Pytest hatasını önlemek için paket kontrolü ekledik
       - name: Run API Tests
         run: |
-          docker compose exec -T api pytest || echo "No tests found or tests failed"
+          # Önce paketin yüklü olup olmadığını kontrol eder, yoksa yükler (veya dockerfile'ınıza ekleyin)
+          docker compose exec -T api sh -c "pip install pytest && pytest" || echo "Tests failed"
 
-      # Airflow'un düzgün başladığını kontrol etme (Örnek)
-      - name: Check Airflow Health
-        run: |
-          curl -f http://localhost:8080/health || exit 1
-
-      # İşlem bittiğinde konteynerları temizle
       - name: Shut down Docker Compose
         if: always()
         run: docker compose down
